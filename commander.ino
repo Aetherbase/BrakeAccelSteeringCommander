@@ -29,6 +29,7 @@ Entire coding works on interrupt, no Loop function is used
 
 */
 #include<Servo.h>
+#include<Wire.h>
 
 #define dir_left 1
 #define dir_right 2
@@ -42,6 +43,9 @@ Entire coding works on interrupt, no Loop function is used
 #define SOUTH false
 #define WEST false
 
+#define ACTIVE_RELAY LOW
+#define INACTIVE_RELAY !ACTIVE_RELAY
+
 
 int steerval;        //hold motor steering angle value
 int ser1val, ser2val; // hold angle values of servo motor
@@ -54,15 +58,29 @@ float prevmotorpos = 0.00;
 int prevdir, currdir;
 int ecnt = 0; // count for encoder
 
-
+const int manautorelay = 2; // control manual auto mode power
+const int ser2pin = 3;       // brake servo
+const int ser1pin = 4;       // accelerator servo
+const int accrelay = 5; // control accessories pin
+const int runcircuit = 6;  // control run circuit
+const int ignitionrelay = 7; // control start circuit
 const int motordirpin = 8;     //motor first terminal
 const int motorpwmpin = 9;     //motor second terminal
 const int motoren = 10;      //motor driver enable pin
-const int ser1pin = 4;       // accelerator servo
-const int ser2pin = 3;       // brake servo
-
+//pin 14,15 used for gps
 const int  encpin = 18; // encoder pins
+const int buttonpress = 19; // manual auto button
+// pin20 and 21 are used for mpu6050
 
+
+
+int manautostate=LOW;
+unsigned long lastdebtime = 0;
+unsigned long debdelay = 10;
+bool nn=false;
+
+
+const int ignitionswitch = A0; // switch for gniition, active low
 
 
 char sep = ',';
@@ -72,21 +90,202 @@ Servo ms2;
 
 String cc = "";
 int v[3];
+
+long accelX, accelY, accelZ;       //accelerometer values here
+float gForceX, gForceY, gForceZ;   // gyro angle values here
+
+long gyroXCalli = 0, gyroYCalli = 0, gyroZCalli = 0;
+long gyroXPresent = 0, gyroYPresent = 0, gyroZPresent = 0;
+long gyroXPast = 0, gyroYPast = 0, gyroZPast = 0;
+float rotX, rotY, rotZ;
+
+float angelX = 0, angelY = 0, angelZ = 0;
+
+long timePast = 0;
+long timePresent = 0;
+
+
 void setup()
 {
   Serial.begin(9600);
   Serial1.begin(9600);
   pinMode(motordirpin, OUTPUT);
   pinMode(motorpwmpin, OUTPUT);
+  //  pinMode(buttonpress,INPUT);
   pinMode(motoren, OUTPUT);
   digitalWrite(motoren, LOW); // disable motor
   ms1.attach(ser1pin); //accel
   ms2.attach(ser2pin); //brake
-  encint();
+  //encint();
+  ignitioninit();
   manualautobuttoninit();
+  runcircuitinit();
+  accessoriesinit();
+}
+
+//run circuit
+void runcircuitinit()
+{
+  pinMode(runcircuit,OUTPUT);
+  runcircuitoff();
+}
+
+void runcircuitoff()
+{
+  digitalWrite(runcircuit,INACTIVE_RELAY);
+}
+
+void runcircuiton()
+{
+  digitalWrite(runcircuit,ACTIVE_RELAY);
+}
+
+//accessories
+void accessoriesinit()
+{
+  pinMode(accrelay,OUTPUT);
+  accessorieson();
+}
+
+void accessorieson()
+{
+  digitalWrite(accrelay,ACTIVE_RELAY);
+}
+
+void accessoriesoff()
+{
+  digitalWrite(accrelay,INACTIVE_RELAY);
 }
 
 
+//ignition
+void ignitioninit()
+{
+  pinMode(ignitionswitch,INPUT);
+  pinMode(ignitionrelay,OUTPUT);
+  digitalWrite(ignitionrelay,INACTIVE_RELAY);
+}
+
+void ignitionstart()
+{
+  accessoriesoff();
+  runcircuiton();
+  digitalWrite(ignitionrelay,ACTIVE_RELAY);
+}
+
+void ignitionstop()
+{
+  accessorieson();
+  digitalWrite(ignitionrelay,INACTIVE_RELAY);
+}
+
+// manual-auto
+
+
+
+
+//gyro
+
+void gyroprocess() 
+{ // call this functon to get values from gyro
+  readAndProcessAccelData();
+  readAndProcessGyroData();
+  // process your values here
+}
+
+void setUpMPU() {
+  // power management
+  Wire.begin();
+  Wire.beginTransmission(0b1101000);          // Start the communication by using address of MPU
+  Wire.write(0x6B);                           // Access the power management register
+  Wire.write(0b00000000);                     // Set sleep = 0
+  Wire.endTransmission();                     // End the communication
+
+  // configure gyro
+  Wire.beginTransmission(0b1101000);
+  Wire.write(0x1B);                           // Access the gyro configuration register
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+
+  // configure accelerometer
+  Wire.beginTransmission(0b1101000);
+  Wire.write(0x1C);                           // Access the accelerometer configuration register
+  Wire.write(0b00000000);
+  Wire.endTransmission();
+  callibrateGyroValues();
+}
+
+void callibrateGyroValues() {
+  for (int i = 0; i < 5000; i++) {
+    getGyroValues();
+    gyroXCalli = gyroXCalli + gyroXPresent;
+    gyroYCalli = gyroYCalli + gyroYPresent;
+    gyroZCalli = gyroZCalli + gyroZPresent;
+  }
+  gyroXCalli = gyroXCalli / 5000;
+  gyroYCalli = gyroYCalli / 5000;
+  gyroZCalli = gyroZCalli / 5000;
+  timePresent = millis();
+}
+
+void readAndProcessAccelData() {
+  Wire.beginTransmission(0b1101000);
+  Wire.write(0x3B);
+  Wire.endTransmission();
+  Wire.requestFrom(0b1101000, 6);
+  while (Wire.available() < 6);
+  accelX = Wire.read() << 8 | Wire.read();
+  accelY = Wire.read() << 8 | Wire.read();
+  accelZ = Wire.read() << 8 | Wire.read();
+  processAccelData();
+}
+
+void processAccelData() {
+  gForceX = accelX / 16384.0;
+  gForceY = accelY / 16384.0;
+  gForceZ = accelZ / 16384.0;
+}
+
+void readAndProcessGyroData() {
+  gyroXPast = gyroXPresent;                                   // Assign Present gyro reaging to past gyro reading
+  gyroYPast = gyroYPresent;                                   // Assign Present gyro reaging to past gyro reading
+  gyroZPast = gyroZPresent;                                   // Assign Present gyro reaging to past gyro reading
+  timePast = timePresent;                                     // Assign Present time to past time
+  timePresent = millis();                                     // get the current time in milli seconds, it is the present time
+
+  getGyroValues();                                            // get gyro readings
+  getAngularVelocity();                                       // get angular velocity
+  calculateAngle();                                           // calculate the angle
+}
+
+void getGyroValues() {
+  Wire.beginTransmission(0b1101000);                          // Start the communication by using address of MPU
+  Wire.write(0x43);                                           // Access the starting register of gyro readings
+  Wire.endTransmission();
+  Wire.requestFrom(0b1101000, 6);                             // Request for 6 bytes from gyro registers (43 - 48)
+  while (Wire.available() < 6);                               // Wait untill all 6 bytes are available
+  gyroXPresent = Wire.read() << 8 | Wire.read();              // Store first two bytes into gyroXPresent
+  gyroYPresent = Wire.read() << 8 | Wire.read();              // Store next two bytes into gyroYPresent
+  gyroZPresent = Wire.read() << 8 | Wire.read();              //Store last two bytes into gyroZPresent
+}
+
+void getAngularVelocity() {
+  rotX = gyroXPresent / 131.0;
+  rotY = gyroYPresent / 131.0;
+  rotZ = gyroZPresent / 131.0;
+}
+
+void calculateAngle() {
+  // same equation can be written as
+  // angelZ = angelZ + ((timePresentZ - timePastZ)*(gyroZPresent + gyroZPast - 2*gyroZCalli)) / (2*1000*131);
+  // 1/(1000*2*131) = 0.00000382
+  // 1000 --> convert milli seconds into seconds
+  // 2 --> comes when calculation area of trapezium
+  // substacted the callibated result two times because there are two gyro readings
+  angelX = angelX + ((timePresent - timePast) * (gyroXPresent + gyroXPast - 2 * gyroXCalli)) * 0.00000382;
+  angelY = angelY + ((timePresent - timePast) * (gyroYPresent + gyroYPast - 2 * gyroYCalli)) * 0.00000382;
+  angelZ = angelZ + ((timePresent - timePast) * (gyroZPresent + gyroZPast - 2 * gyroZCalli)) * 0.00000382;
+}
 void encint()
 {
   {
@@ -95,21 +294,25 @@ void encint()
   }
 }
 
-const int buttonpress = 20;
-int manautostate=LOW;
-unsigned long lastdebtime = 0;
-unsigned long debdelay = 10;
-bool nn=false;
-
 void manualautobuttoninit()
 {
-  pinMode(13,OUTPUT);
-  attachInterrupt(digitalPinToInterrupt(buttonpress), buttonhandle, FALLING);
+  pinMode(manautorelay,OUTPUT);
+  attachInterrupt(digitalPinToInterrupt(buttonpress), bsr, CHANGE);
 }
+
+void autorelay()
+{
+  digitalWrite(manautorelay,ACTIVE_RELAY);
+}
+void manrelay()
+{
+  digitalWrite(manautorelay,INACTIVE_RELAY);
+}
+
 
 long debouncing_time = 15; //Debouncing Time in Milliseconds
 volatile unsigned long last_micros;
-void buttonhandle() // handle button code
+void buttonhandle()
 {
   if((long)(micros() - last_micros) >= debouncing_time * 1000) {
     bsr();
@@ -119,9 +322,9 @@ void buttonhandle() // handle button code
 
 void bsr()
 {
-  manautostate = !manautostate;
-  if(manautostate)Serial.println("    MODE0"); //manual
-  else Serial.println("    MODE1"); //auto
+  manautostate = digitalRead(buttonpress);
+  if(manautostate==HIGH){Serial.println("    MODE0");manrelay();} //manual
+  else {Serial.println("    MODE1");autorelay();} //auto
 }
 
 void enchandle()
@@ -196,7 +399,8 @@ bool turnleft(float angle)
 
 void loop()
 {
-  
+  int a = digitalRead(ignitionswitch);
+  a==LOW?ignitionstart():ignitionstop();
 }
 
 void serialEvent() // process new parameters when data is there in Serial
@@ -348,4 +552,3 @@ void serialEvent1()
   }
 
 }
-
