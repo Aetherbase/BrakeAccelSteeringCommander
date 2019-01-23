@@ -30,7 +30,14 @@ Entire coding works on interrupt, no Loop function is used
 */
 #include<Servo.h>
 #include<Wire.h>
+#include<TinyGPS.h>
 
+TinyGPS gps;
+#define GPS Serial2
+#define GPSEvent serialEvent2
+
+//Attach arduino serial port connection with pc
+//Attach serial2 connection with esp8266
 #define dir_left 1
 #define dir_right 2
 
@@ -38,55 +45,83 @@ Entire coding works on interrupt, no Loop function is used
 #define GEAR_RATIO 75.0
 #define factor 6.00
 
+#define ACTIVE_RELAY LOW
+#define INACTIVE_RELAY !ACTIVE_RELAY
+
 #define NORTH true
 #define EAST true
 #define SOUTH false
 #define WEST false
 
-#define ACTIVE_RELAY LOW
-#define INACTIVE_RELAY !ACTIVE_RELAY
 
+//pins definition
+
+#define D0 16
+#define D1 5
+#define D2 4
+#define D3 0
+#define D4 2
+#define D5 14
+#define D6 12
+#define D7 13
+#define D8 15
+#define SD3 10
+#define SD2 9
+
+
+boolean mode;
+#define MANUAL false
+#define AUTOMATIC true;
 
 int steerval;        //hold motor steering angle value
 int ser1val, ser2val; // hold angle values of servo motor
 
 int interruptcall = 0;
 
-int prevsteerval = 0, prevser1val = 0, prevser2val = 0;
+int prevsteerval = 0, prevser1val = 0, prevser2val = 0, prevclutchval=0,clutchval=0;
 float motorpos = 0.00;
 float prevmotorpos = 0.00;
 int prevdir, currdir;
 int ecnt = 0; // count for encoder
 
-const int manautorelay = 2; // control manual auto mode power
-const int ser2pin = 3;       // brake servo
-const int ser1pin = 4;       // accelerator servo
-const int accrelay = 5; // control accessories pin
-const int runcircuit = 6;  // control run circuit
-const int ignitionrelay = 7; // control start circuit
-const int motordirpin = 8;     //motor first terminal
-const int motorpwmpin = 9;     //motor second terminal
-const int motoren = 10;      //motor driver enable pin
-//pin 14,15 used for gps
+#define MANUAL false
+#define AUTOMATIC true;
+
+const int manautorelay = 46; // manual auto relay
+const int ser2pin = 5;       // brake servo
+const int ser1pin = 6;       // accelerator servo
+const int accrelay = 30; // control accessories pin
+const int runcircuit = 32;  // control run circuit
+const int ignitionrelay = 34; // control start circuit
+const int motordirpina = 24;     //motor first terminal
+const int motordirpinb = 26;     //motor first terminal
+const int motorpwmpin = 11;     //motor second terminal
+const int motoren = 22;      //motor driver enable pin
+////pin 14,15 used for gps
 const int  encpin = 18; // encoder pins
-const int buttonpress = 19; // manual auto button
-// pin20 and 21 are used for mpu6050
+const int buttonpress = 2; // manual auto button
+//// pin20 and 21 are used for mpu6050
+const int motordrivpwmpin = 26;
 
-
-
-int manautostate=LOW;
+int manautostate = LOW;
 unsigned long lastdebtime = 0;
 unsigned long debdelay = 10;
-bool nn=false;
+bool nn = false;
 
 
-const int ignitionswitch = A0; // switch for gniition, active low
+const int ignitionswitch = 40; // switch for gniition, active low
+const int batteryVoltage = A6; // read battery voltage
+
+const int gearshiftpin = 27;
+const int clutchpin = 29;
 
 
 char sep = ',';
 
 Servo ms1;
 Servo ms2;
+Servo gearshiftservo;
+Servo clutchservo;
 
 String cc = "";
 int v[3];
@@ -105,78 +140,193 @@ long timePast = 0;
 long timePresent = 0;
 
 
+
+
+typedef struct vnh2sp30
+{
+  int currsense, en, da, db, pwm, dir;
+  float currentval;
+  const int MOTOR_CW = 1;
+  const int MOTOR_CCW = 2;
+  const int MOTOR_STOP = 0;
+  void begin(unsigned int enb, unsigned int cs, unsigned int mma, unsigned int mmb, unsigned int pwmppin)
+  {
+    en = enb;
+    currsense = cs;
+    da = mma;
+    db = mmb;
+    pwm = pwmppin;
+    pinMode(en, OUTPUT);
+    pinMode(da, OUTPUT);
+    pinMode(db, OUTPUT);
+    pinMode(pwm, OUTPUT);
+    pinMode(cs, INPUT);
+  }
+
+  float getCurrentInMilliAmps()
+  {
+    int val = analogRead(currsense);
+    float ans = val * 5 * 11370 / 1500;
+    return ans;
+  }
+
+  float getCurrentInAmps()
+  {
+    return getCurrentInMilliAmps() / 1000.00;
+  }
+
+  void write(int direction, int dutycycle)
+  {
+    int PWM = map(dutycycle, 0, 100, 0, 255);
+
+    if (direction == MOTOR_CW)
+    {
+      digitalWrite(en, HIGH);
+      digitalWrite(da, HIGH);
+      digitalWrite(db, LOW);
+      Serial.println("Again");
+      analogWrite(pwm, PWM);
+    }
+
+    else if (direction == MOTOR_CCW)
+    {
+      digitalWrite(en, HIGH);
+      digitalWrite(db, HIGH);
+      digitalWrite(da, LOW);
+      analogWrite(pwm, PWM);
+    }
+
+    else 
+    {
+      digitalWrite(en, HIGH);
+      digitalWrite(da, LOW);
+      digitalWrite(db, LOW);
+      digitalWrite(pwm, LOW);
+    }
+  }
+};
+
+vnh2sp30 steeringmotor;
+vnh2sp30 supply;
+
+
+const int gearmin = 54;
+const int gearmax = 140;
+
+
+const int supplyen = 49;
+const int supplyA = 45;
+const int supplyB = 47;
+const int supplyPWM = 13;
+
+
+
+
 void setup()
 {
+  clutchservo.attach(clutchpin);
+  gearshiftservo.attach(gearshiftpin);
+  steeringmotor.begin(motoren, 70, motordirpina, motordirpinb, motorpwmpin);
   Serial.begin(9600);
-  Serial1.begin(9600);
-  pinMode(motordirpin, OUTPUT);
-  pinMode(motorpwmpin, OUTPUT);
+  GPS.begin(9600);
   //  pinMode(buttonpress,INPUT);
-  pinMode(motoren, OUTPUT);
-  digitalWrite(motoren, LOW); // disable motor
   ms1.attach(ser1pin); //accel
   ms2.attach(ser2pin); //brake
-  //encint();
+  encint();
   ignitioninit();
   manualautobuttoninit();
   runcircuitinit();
   accessoriesinit();
+  voltagereaderinit();
+  supply.begin(supplyen,78,supplyA,supplyB,supplyPWM);
+  supply.write(1,56);
+}
+// battery voltage reader module
+
+void voltagereaderinit()
+{
+  pinMode(batteryVoltage, INPUT);
+}
+float readVoltage()
+{
+  int count = analogRead(batteryVoltage);
+  float ans = (float)count * 5.00 / 1023.00;
+  return ans * 4.00;
+}
+
+bool isEngineStarted()
+{
+  if (readVoltage() >= 13.60)
+  {
+    Serial.println("Engine Start");
+    return true;
+  }
+  return false;
+}
+
+bool isBatteryLow()
+{
+  if (readVoltage() <= 11.30) {
+    Serial.println("LOW");
+    return true;
+  }
+  return false;
 }
 
 //run circuit
 void runcircuitinit()
 {
-  pinMode(runcircuit,OUTPUT);
+  pinMode(runcircuit, OUTPUT);
   runcircuitoff();
 }
 
 void runcircuitoff()
 {
-  digitalWrite(runcircuit,INACTIVE_RELAY);
+  digitalWrite(runcircuit, INACTIVE_RELAY);
 }
 
 void runcircuiton()
 {
-  digitalWrite(runcircuit,ACTIVE_RELAY);
+  digitalWrite(runcircuit, ACTIVE_RELAY);
 }
 
 //accessories
 void accessoriesinit()
 {
-  pinMode(accrelay,OUTPUT);
+  pinMode(accrelay, OUTPUT);
   accessorieson();
 }
 
 void accessorieson()
 {
-  digitalWrite(accrelay,ACTIVE_RELAY);
+  digitalWrite(accrelay, ACTIVE_RELAY);
 }
 
 void accessoriesoff()
 {
-  digitalWrite(accrelay,INACTIVE_RELAY);
+  digitalWrite(accrelay, INACTIVE_RELAY);
 }
 
 
 //ignition
 void ignitioninit()
 {
-  pinMode(ignitionswitch,INPUT);
-  pinMode(ignitionrelay,OUTPUT);
-  digitalWrite(ignitionrelay,INACTIVE_RELAY);
+  pinMode(ignitionswitch, INPUT);
+  pinMode(ignitionrelay, OUTPUT);
+  digitalWrite(ignitionrelay, INACTIVE_RELAY);
 }
 
 void ignitionstart()
 {
   accessoriesoff();
   runcircuiton();
-  digitalWrite(ignitionrelay,ACTIVE_RELAY);
+  digitalWrite(ignitionrelay, ACTIVE_RELAY);
 }
 
 void ignitionstop()
 {
   accessorieson();
-  digitalWrite(ignitionrelay,INACTIVE_RELAY);
+  digitalWrite(ignitionrelay, INACTIVE_RELAY);
 }
 
 // manual-auto
@@ -186,7 +336,7 @@ void ignitionstop()
 
 //gyro
 
-void gyroprocess() 
+void gyroprocess()
 { // call this functon to get values from gyro
   readAndProcessAccelData();
   readAndProcessGyroData();
@@ -294,37 +444,44 @@ void encint()
   }
 }
 
+
+
+
+// manual auto
+
 void manualautobuttoninit()
 {
-  pinMode(manautorelay,OUTPUT);
-  attachInterrupt(digitalPinToInterrupt(buttonpress), bsr, CHANGE);
+  pinMode(manautorelay, OUTPUT);
+  //pinMode(buttonpress,INPUT);
+   attachInterrupt(digitalPinToInterrupt(buttonpress), bsr, CHANGE);
 }
 
 void autorelay()
 {
-  digitalWrite(manautorelay,ACTIVE_RELAY);
+  digitalWrite(manautorelay, ACTIVE_RELAY);
+  gearshiftservo.write(gearmin);
 }
 void manrelay()
 {
-  digitalWrite(manautorelay,INACTIVE_RELAY);
+  gearshiftservo.write(gearmax);
+  digitalWrite(manautorelay, INACTIVE_RELAY);
 }
 
 
 long debouncing_time = 15; //Debouncing Time in Milliseconds
 volatile unsigned long last_micros;
-void buttonhandle()
-{
-  if((long)(micros() - last_micros) >= debouncing_time * 1000) {
-    bsr();
-    last_micros = micros();
-  }
-}
-
 void bsr()
 {
   manautostate = digitalRead(buttonpress);
-  if(manautostate==HIGH){Serial.println("    MODE0");manrelay();} //manual
-  else {Serial.println("    MODE1");autorelay();} //auto
+  if (manautostate == HIGH) {
+    Serial.println("M");  //manual
+    
+    manrelay();
+  }
+  else {
+    Serial.println("A");  //auto
+    autorelay();
+  }
 }
 
 void enchandle()
@@ -339,31 +496,20 @@ void enchandle()
   }
   // do position calculation here
   motorpos = (360.00 / GEAR_RATIO) * (ecnt / PULSES_PER_ROTATION);
+  //Serial.println(motorpos);
+
 }
 
-int itervar = 0;
 bool turnright(float angle)
 {
-  Serial.println("Rightangle:" + (String)(angle));
-  Serial.println("Motorpos:" + (String)motorpos);
-  //angle processing code here
-  while ((motorpos) < angle)
+  while (motorpos < angle)
   {
-    digitalWrite(motordirpin, HIGH);
-    for (; itervar < 255; itervar++)
-    {
-      analogWrite(motorpwmpin, itervar);
-      delay(1);
-    }
-    if (itervar == 255) digitalWrite(motorpwmpin, HIGH);
-    digitalWrite(motoren, HIGH);
+    steeringmotor.write(steeringmotor.MOTOR_CW, 100);
+    Serial.println(motorpos);
   }
-  digitalWrite(motordirpin, LOW);
-  digitalWrite(motorpwmpin, LOW);
-  digitalWrite(motoren, LOW);
-  itervar = 0;
   Serial.println("right:" + (String)motorpos);
   Serial.println("New motorpos :" + (String)motorpos);
+  steeringmotor.write(steeringmotor.MOTOR_STOP,100);
   //prevmotorpos = motorpos;
   return true;
 }
@@ -372,183 +518,149 @@ bool turnright(float angle)
 
 bool turnleft(float angle)
 {
-  Serial.println("Leftangle:" + (String)(angle));
-  Serial.println("Motorpos:" + (String)motorpos);
-  digitalWrite(motoren, HIGH);
   while ((motorpos) > angle)
   {
-    digitalWrite(motordirpin, LOW);
-    for (; itervar < 255; itervar++)
-    {
-      analogWrite(motorpwmpin, itervar);
-      delay(1);
-    }
-    if (itervar == 255) digitalWrite(motorpwmpin, HIGH);
+    steeringmotor.write(steeringmotor.MOTOR_CCW, 100);
+    Serial.println("called");
   }
   //angle processing code here
   //while()
   // after procesing value
-  digitalWrite(motordirpin, LOW);
-  digitalWrite(motorpwmpin, LOW);
-  digitalWrite(motoren, LOW);
   Serial.println("LEft:" + (String)motorpos);
   Serial.println("New motorpos :" + (String)motorpos);
-  itervar = 0;
+  steeringmotor.write(steeringmotor.MOTOR_STOP, 100);
   return true;
 }
 
 void loop()
 {
+  //isEngineStarted();
+  //isBatteryLow();
   int a = digitalRead(ignitionswitch);
-  a==LOW?ignitionstart():ignitionstop();
-}
+  a == LOW ? ignitionstart() : ignitionstop();
 
-void serialEvent() // process new parameters when data is there in Serial
-{
-  while (Serial.available() > 0)
+
+
+
+  bool newData = false;
+  unsigned long chars;
+
+  // For one second we parse GPS data and report some key values
+  for (unsigned long start = millis(); millis() - start < 1000;)
   {
-    ser2val = Serial.parseInt();
-    ser1val = Serial.parseInt();
-    steerval = Serial.parseInt();
-    //buttonhandle();
-    if ((prevser1val != ser1val) || (prevser2val != ser2val) || (prevsteerval != steerval)) Serial.print("Accel:" + (String)ser2val + "\tBrake:" + (String)ser1val + "\tSteering:" + (String)steerval);
-
-    prevser2val = ser2val;
-    prevser1val = ser1val;
-    if (Serial.read() == '\0')
+    bsr();
+    while (GPS.available())
     {
-      Serial.println("Terminated");
-      break;
+      bsr();
+      char c = GPS.read();
+      // Serial.write(c); // uncomment this line if you want to see the GPS data flowing
+      if (gps.encode(c)) // Did a new valid sentence come in?
+        newData = true;
     }
-    switch (ser1val)
-    {
-      case 0:
-        ms2.write(0);
-        break;
+  }
 
-      case 1:
-        ms2.write(20);
-        break;
-
-      case 2:
-        ms2.write(60);
-        break;
-
-      case 3:
-        ms2.write(120);
-        break;
-
-      default:
-        ms2.write(0);
-        break;
-    }
-
-    switch (ser2val)
-    {
-      case 0:
-        ms1.write(42);
-        break;
-
-      case 1:
-        ms1.write(61);//just start
-        break;
-
-      case 2:
-        ms1.write(72); // medium speed
-        break;
-
-      case 3:
-        ms1.write(81); //full
-        break;
-
-      default:
-        ms1.write(42);
-        break;
-    }
-    if (steerval < prevsteerval) {
-      currdir = dir_left;
-      turnleft((float)steerval * factor);
-    }
-    if (steerval > prevsteerval)
-    {
-      currdir = dir_right;
-      turnright((float)steerval * factor);
-    }
-    prevsteerval = steerval;
-    prevdir = currdir;
+  if (newData)
+  {
+    float flat, flon;
+    unsigned long age;
+    gps.f_get_position(&flat, &flon, &age);
+    Serial.print("Positon:  ");
+    Serial.print(flat == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : flat, 6);
+    Serial.print(",");
+    Serial.println(flon == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : flon, 6);
+    //String msg = "Positon:  " + 
   }
 }
 
-String inputString="";
-bool stringComplete = false;
-String signal = "$GPGLL";
-void serialEvent1()
+
+
+
+
+// Get data from PC
+void serialEvent() // process new parameters when data is there in Serial (from ESP8266)
 {
-    while (Serial1.available()) {
-    // get the new byte:
-    char inChar = (char) Serial1.read();
-    // add it to the inputString:
-    inputString += inChar;
-    // if the incoming character is a newline, set a flag
-    // so the main loop can do something about it:
-    if (inChar == '\n') {
-      stringComplete = true;
-    }
-  }
-  double lat, lon;
-  boolean latpos, lonpos;
-  if (stringComplete) {
-    String BB = inputString.substring(0, 6);
-    if (BB == signal) {
-      String LAT = inputString.substring(7, 16);
-      int LATperiod = LAT.indexOf('.');
-      int LATzero = LAT.indexOf('0');
-      if (LATzero == 0) {
-        LAT = LAT.substring(1);
-      }
-      if (inputString.substring(18) == 'N')
-      {
-        latpos = NORTH;
-      }
-      else
-      {
-        latpos = SOUTH;
-      }
+  ser1val = Serial.parseInt(); // accel
+  ser2val = Serial.parseInt();  //brake
+  steerval = Serial.parseInt(); // steer
+  clutchval = Serial.parseInt(); //clutch
+  int horn = Serial.parseInt(); //horn
+  //buttonhandle();
+  if ((prevser1val != ser1val) || (prevclutchval != clutchval) || (prevser2val != ser2val) || (prevsteerval != steerval)) Serial.print("Accel:" + (String)ser2val + "\tBrake:" + (String)ser1val + "\tSteering:" + (String)steerval);
 
-      String LON = inputString.substring(20, 29);
-      int LONperiod = LON.indexOf('.');
-      int LONTzero = LON.indexOf('0');
-      if (LONTzero == 0) {
-        LON = LON.substring(1);
-      }
-      if (inputString.substring(31) == 'E')
-      {
-        lonpos = EAST;
-      }
-      else
-      {
-        lonpos = WEST;
-      }
-      
-      //Parse string to process data
-      lat = LAT.toFloat() / (float)100;
-      lon = LON.toFloat() / (float)100;
-      
-      //Convert NMEA data to degrees
-      float latitude = (int)lat + ((100 * ((lat - (int)lat) / (float)60))*(1)); //latitude in degrees   latpos==NORTH?1:-1
-      float longitude = (int)lon +  ((100 * ((lon - (int)lon) / (float)60))*(1)); //longitude in degrees   lonpos==EAST?1:-1
-      Serial.print("Position: ");
-      Serial.print(latitude, 6);
-      Serial.print(" " + (latpos == NORTH) ? "N   " : "S   ");
-      Serial.print(longitude, 6);
-      Serial.println(" " + (lonpos == EAST) ? "E" : "W");
-
-    }
-
-    // Serial.println(inputString);
-    // clear the string:
-    inputString = "";
-    stringComplete = false;
+  prevser2val = ser2val;
+  prevser1val = ser1val;
+  if (Serial.read() == '\0')
+  {
+    Serial.println("Terminated");
   }
 
+  //accel
+  switch (ser1val)
+  {
+    case 0:
+      ms2.write(0);
+      break;
+
+    case 1:
+      ms2.write(20);
+      break;
+
+    case 2:
+      ms2.write(60);
+      break;
+
+    case 3:
+      ms2.write(120);
+      break;
+
+    default:
+      ms2.write(0);
+      break;
+  }
+
+//brake
+  switch (ser2val)
+  {
+    case 0:
+      ms1.write(42);
+      break;
+
+    case 1:
+      ms1.write(61);//just start
+      break;
+
+    case 2:
+      ms1.write(72); // medium speed
+      break;
+
+    case 3:
+      ms1.write(81); //full
+      break;
+
+    default:
+      ms1.write(42);
+      break;
+  }
+
+
+  //steering commander
+  if (steerval < prevsteerval) {
+    currdir = dir_left;
+    turnleft((float)steerval * factor);
+  }
+  if (steerval > prevsteerval)
+  {
+    currdir = dir_right;
+    turnright((float)steerval * factor);
+  }
+  prevsteerval = steerval;
+  prevdir = currdir;
+
+  //clutch control
+  clutchval = map(clutchval,0,100,54,80);
+  clutchservo.write(clutchval);
+  prevclutchval = clutchval;
+
+  //horn
+  Serial.print("\tHorn");
 }
