@@ -27,8 +27,7 @@ Ground
 
 Entire coding works on interrupt, no Loop function is used
 
-*/
-#include<Servo.h>
+*/#include<Servo.h>
 #include<Wire.h>
 #include<TinyGPS.h>
 
@@ -43,7 +42,7 @@ TinyGPS gps;
 
 #define PULSES_PER_ROTATION 120.00
 #define GEAR_RATIO 75.0
-#define factor 6.00
+#define factor 6.00 * 15
 
 #define ACTIVE_RELAY LOW
 #define INACTIVE_RELAY !ACTIVE_RELAY
@@ -79,10 +78,10 @@ int ser1val, ser2val; // hold angle values of servo motor
 int interruptcall = 0;
 
 int prevsteerval = 0, prevser1val = 0, prevser2val = 0, prevclutchval=0,clutchval=0;
-float motorpos = 0.00;
+double motorpos = 0.00;
 float prevmotorpos = 0.00;
 int prevdir, currdir;
-int ecnt = 0; // count for encoder
+double ecnt = 0; // count for encoder
 
 #define MANUAL false
 #define AUTOMATIC true;
@@ -184,7 +183,6 @@ typedef struct vnh2sp30
       digitalWrite(en, HIGH);
       digitalWrite(da, HIGH);
       digitalWrite(db, LOW);
-      Serial.println("Again");
       analogWrite(pwm, PWM);
     }
 
@@ -239,7 +237,7 @@ void setup()
   accessoriesinit();
   voltagereaderinit();
   supply.begin(supplyen,78,supplyA,supplyB,supplyPWM);
-  supply.write(1,56);
+  supply.write(1,50);
 }
 // battery voltage reader module
 
@@ -500,14 +498,13 @@ void enchandle()
 
 }
 
-bool turnright(float angle)
+bool turnright(double angle)
 {
+  Serial.println("right:" + (String)angle);
   while (motorpos < angle)
   {
     steeringmotor.write(steeringmotor.MOTOR_CW, 100);
-    Serial.println(motorpos);
   }
-  Serial.println("right:" + (String)motorpos);
   Serial.println("New motorpos :" + (String)motorpos);
   steeringmotor.write(steeringmotor.MOTOR_STOP,100);
   //prevmotorpos = motorpos;
@@ -516,7 +513,7 @@ bool turnright(float angle)
 
 
 
-bool turnleft(float angle)
+bool turnleft(double angle)
 {
   while ((motorpos) > angle)
   {
@@ -548,10 +545,8 @@ void loop()
   // For one second we parse GPS data and report some key values
   for (unsigned long start = millis(); millis() - start < 1000;)
   {
-    bsr();
     while (GPS.available())
     {
-      bsr();
       char c = GPS.read();
       // Serial.write(c); // uncomment this line if you want to see the GPS data flowing
       if (gps.encode(c)) // Did a new valid sentence come in?
@@ -585,7 +580,7 @@ void serialEvent() // process new parameters when data is there in Serial (from 
   clutchval = Serial.parseInt(); //clutch
   int horn = Serial.parseInt(); //horn
   //buttonhandle();
-  if ((prevser1val != ser1val) || (prevclutchval != clutchval) || (prevser2val != ser2val) || (prevsteerval != steerval)) Serial.print("Accel:" + (String)ser2val + "\tBrake:" + (String)ser1val + "\tSteering:" + (String)steerval);
+  if ((prevser1val != ser1val) || (prevclutchval != clutchval) || (prevser2val != ser2val) || (prevsteerval != steerval)) Serial.println("Accel:" + (String)ser2val + "\tBrake:" + (String)ser1val + "\tSteering:" + (String)steerval);
 
   prevser2val = ser2val;
   prevser1val = ser1val;
@@ -598,11 +593,11 @@ void serialEvent() // process new parameters when data is there in Serial (from 
   switch (ser1val)
   {
     case 0:
-      ms2.write(0);
+      ms2.write(20);
       break;
 
     case 1:
-      ms2.write(20);
+      ms2.write(55);
       break;
 
     case 2:
@@ -610,11 +605,11 @@ void serialEvent() // process new parameters when data is there in Serial (from 
       break;
 
     case 3:
-      ms2.write(120);
+      ms2.write(70);
       break;
 
     default:
-      ms2.write(0);
+      ms2.write(20);
       break;
   }
 
@@ -662,5 +657,5 @@ void serialEvent() // process new parameters when data is there in Serial (from 
   prevclutchval = clutchval;
 
   //horn
-  Serial.print("\tHorn");
+  if (horn>0) Serial.print("\tHorn");
 }
